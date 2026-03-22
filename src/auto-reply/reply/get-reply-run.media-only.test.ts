@@ -29,6 +29,7 @@ vi.mock("../../process/command-queue.js", () => ({
 }));
 
 vi.mock("../../routing/session-key.js", () => ({
+  isIdeGatewayExternalAgentId: vi.fn().mockReturnValue(false),
   normalizeMainKey: vi.fn().mockReturnValue("main"),
 }));
 

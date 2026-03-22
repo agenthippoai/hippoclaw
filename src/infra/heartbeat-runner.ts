@@ -39,6 +39,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getQueueSize } from "../process/command-queue.js";
 import { CommandLane } from "../process/lanes.js";
 import {
+  isIdeGatewayExternalAgentId,
   normalizeAgentId,
   parseAgentSessionKey,
   toAgentStoreSessionKey,
@@ -629,6 +630,9 @@ export async function runHeartbeatOnce(opts: {
   }
   if (!resolveHeartbeatIntervalMs(cfg, undefined, heartbeat)) {
     return { status: "skipped", reason: "disabled" };
+  }
+  if (isIdeGatewayExternalAgentId(agentId)) {
+    return { status: "skipped", reason: "gateway-external-agent" };
   }
 
   const startedAt = opts.deps?.nowMs?.() ?? Date.now();

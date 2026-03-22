@@ -11,6 +11,7 @@ export const GATEWAY_CLIENT_IDS = {
   TEST: "test",
   FINGERPRINT: "fingerprint",
   PROBE: "openclaw-probe",
+  AGENT_BACKEND: "agent-backend", // External agent backends (IDE, CLI)
 } as const;
 
 export type GatewayClientId = (typeof GATEWAY_CLIENT_IDS)[keyof typeof GATEWAY_CLIENT_IDS];
@@ -24,6 +25,7 @@ export const GATEWAY_CLIENT_MODES = {
   CLI: "cli",
   UI: "ui",
   BACKEND: "backend",
+  AGENT_BACKEND: "agent-backend", // External agent handlers (IDE, CLI)
   NODE: "node",
   PROBE: "probe",
   TEST: "test",

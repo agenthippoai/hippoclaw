@@ -34,6 +34,10 @@ import { isNotFoundPathError } from "../../infra/path-guards.js";
 import { DEFAULT_AGENT_ID, normalizeAgentId } from "../../routing/session-key.js";
 import { resolveUserPath } from "../../utils.js";
 import {
+  externalAgentMethodHandlers,
+  getExternalAgentsForList,
+} from "../external-agent-handlers.js";
+import {
   ErrorCodes,
   errorShape,
   formatValidationErrors,
@@ -470,9 +474,12 @@ export const agentsHandlers: GatewayRequestHandlers = {
     }
 
     const cfg = loadConfig();
-    const result = listAgentsForGateway(cfg);
-    respond(true, result, undefined);
+    const configAgents = listAgentsForGateway(cfg);
+    const externalAgents = getExternalAgentsForList();
+
+    respond(true, { ...configAgents, external: externalAgents }, undefined);
   },
+  ...externalAgentMethodHandlers,
   "agents.create": async ({ params, respond }) => {
     if (!validateAgentsCreateParams(params)) {
       respond(

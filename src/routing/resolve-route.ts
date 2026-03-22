@@ -10,6 +10,7 @@ import {
   buildAgentPeerSessionKey,
   DEFAULT_ACCOUNT_ID,
   DEFAULT_MAIN_KEY,
+  isIdeGatewayExternalAgentId,
   normalizeAccountId,
   normalizeAgentId,
   sanitizeAgentId,
@@ -161,6 +162,12 @@ export function pickFirstExistingAgentId(cfg: OpenClawConfig, agentId: string): 
   const resolved = lookup.byNormalizedId.get(normalized);
   if (resolved) {
     return resolved;
+  }
+  // Gateway-external IDE agents (`ide-*`) are registered over WebSocket and are not
+  // required to appear in `agents.list`. Without this, channel bindings from Meet Agent
+  // / config.patch would silently rewrite to the embedded default agent.
+  if (isIdeGatewayExternalAgentId(normalized)) {
+    return sanitizeAgentId(trimmed);
   }
   return lookup.fallbackDefaultAgentId;
 }

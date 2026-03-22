@@ -33,6 +33,7 @@ import {
 } from "../chat-abort.js";
 import { type ChatImageContent, parseMessageWithAttachments } from "../chat-attachments.js";
 import { stripEnvelopeFromMessage, stripEnvelopeFromMessages } from "../chat-sanitize.js";
+import { handleExternalAgentChatSend } from "../external-agent-chat.js";
 import { ADMIN_SCOPE } from "../method-scopes.js";
 import {
   GATEWAY_CLIENT_CAPS,
@@ -1148,7 +1149,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       }
     }
     const rawSessionKey = p.sessionKey;
-    const { cfg, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
+    const { cfg, entry, storePath, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
     const timeoutMs = resolveAgentTimeoutMs({
       cfg,
       overrideMs: p.timeoutMs,
@@ -1279,6 +1280,27 @@ export const chatHandlers: GatewayRequestHandlers = {
         sessionKey,
         config: cfg,
       });
+      if (
+        await handleExternalAgentChatSend({
+          agentId,
+          ctx,
+          rawMessage,
+          parsedMessage,
+          parsedImages,
+          sessionKey: rawSessionKey,
+          entry,
+          storePath,
+          clientRunId,
+          context,
+          broadcastFinal: broadcastChatFinal,
+          broadcastError: broadcastChatError,
+          errorShape,
+          errorCode: ErrorCodes.UNAVAILABLE,
+          channel: INTERNAL_MESSAGE_CHANNEL,
+        })
+      ) {
+        return;
+      }
       const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
         cfg,
         agentId,

@@ -1,7 +1,7 @@
 import {
   resolveAgentDir,
   resolveAgentWorkspaceDir,
-  resolveSessionAgentId,
+  resolveInboundEffectiveAgentId,
   resolveAgentSkillsFilter,
 } from "../../agents/agent-scope.js";
 import { resolveModelRefFromString } from "../../agents/model-selection.js";
@@ -11,6 +11,7 @@ import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
 import { type OpenClawConfig, loadConfig } from "../../config/config.js";
 import { applyLinkUnderstanding } from "../../link-understanding/apply.js";
 import { applyMediaUnderstanding } from "../../media-understanding/apply.js";
+import { isIdeGatewayExternalAgentId } from "../../routing/session-key.js";
 import { defaultRuntime } from "../../runtime.js";
 import { normalizeStringEntries } from "../../shared/string-normalization.js";
 import { resolveCommandAuthorization } from "../command-auth.js";
@@ -61,13 +62,12 @@ export async function getReplyFromConfig(
 ): Promise<ReplyPayload | ReplyPayload[] | undefined> {
   const isFastTestEnv = process.env.OPENCLAW_TEST_FAST === "1";
   const cfg = configOverride ?? loadConfig();
-  const targetSessionKey =
-    ctx.CommandSource === "native" ? ctx.CommandTargetSessionKey?.trim() : undefined;
-  const agentSessionKey = targetSessionKey || ctx.SessionKey;
-  const agentId = resolveSessionAgentId({
-    sessionKey: agentSessionKey,
-    config: cfg,
-  });
+  const agentId = resolveInboundEffectiveAgentId(ctx, cfg);
+  if (isIdeGatewayExternalAgentId(agentId)) {
+    return {
+      text: "⚠️ Agent is not connected. Connect your editor (Agent Anywhere) to the OpenClaw gateway.",
+    };
+  }
   const mergedSkillFilter = mergeSkillFilters(
     opts?.skillFilter,
     resolveAgentSkillsFilter(cfg, agentId),

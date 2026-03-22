@@ -6,9 +6,11 @@ import { resolveStateDir } from "../config/paths.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import {
   DEFAULT_AGENT_ID,
+  isIdeGatewayExternalAgentId,
   normalizeAgentId,
   parseAgentSessionKey,
   resolveAgentIdFromSessionKey,
+  resolveInboundAgentSessionKey,
 } from "../routing/session-key.js";
 import { resolveUserPath } from "../utils.js";
 import { normalizeSkillFilter } from "./skills/filter.js";
@@ -108,6 +110,27 @@ export function resolveSessionAgentId(params: {
   config?: OpenClawConfig;
 }): string {
   return resolveSessionAgentIds(params).sessionAgentId;
+}
+
+/**
+ * Agent id for routing (embedded vs external) and for the embedded Pi pipeline.
+ * When `ctx.SessionKey` targets a gateway IDE agent (`ide-*`) but
+ * `resolveInboundAgentSessionKey` collapses to the default agent (native slash flows,
+ * missing `CommandTargetSessionKey`, etc.), still treat the turn as that IDE agent so
+ * we do not run embedded Pi against the gateway-side ide- agent auth dirs without API keys.
+ */
+export function resolveInboundEffectiveAgentId(
+  ctx: { SessionKey?: string; CommandSource?: string; CommandTargetSessionKey?: string },
+  cfg: OpenClawConfig,
+): string {
+  const inboundKey = resolveInboundAgentSessionKey(ctx);
+  const ctxKey = ctx.SessionKey?.trim();
+  const idInbound = resolveSessionAgentIds({ sessionKey: inboundKey, config: cfg }).sessionAgentId;
+  const idFromCtx = resolveSessionAgentIds({ sessionKey: ctxKey, config: cfg }).sessionAgentId;
+  if (isIdeGatewayExternalAgentId(idFromCtx)) {
+    return idFromCtx;
+  }
+  return idInbound;
 }
 
 function resolveAgentEntry(cfg: OpenClawConfig, agentId: string): AgentEntry | undefined {

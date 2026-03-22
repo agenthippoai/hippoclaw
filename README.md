@@ -80,6 +80,41 @@ openclaw agent --message "Ship checklist" --thinking high
 
 Upgrading? [Updating guide](https://docs.openclaw.ai/install/updating) (and run `openclaw doctor`).
 
+## External agent backends (Agenthippo IDE & CLI)
+
+**HippoClaw** is OpenClaw’s gateway plus **external agent** support: **Agenthippo** can attach from a **VS Code–compatible editor** _or_ from the **Agenthippo CLI**. Both speak the same **gateway WebSocket** protocol, **register** one or more agents, and **handle turns** on the machine where they run instead of using the built-in Pi agent on the gateway.
+
+**How it works**
+
+1. You run the **gateway** as usual (daemon or `openclaw gateway`). It still owns channels, pairing, sessions, and delivery to WhatsApp, Telegram, Slack, Discord, and the rest of the OpenClaw surface.
+2. The **Agenthippo IDE extension** or **Agenthippo CLI** opens a **gateway WebSocket** client and registers agents (IDs use the `ide-` prefix, for example `ide-agenthippo-vscode`). The gateway keeps a small **registry** of which connection owns which agent id.
+3. When a session is routed to such an id, **`agent.run` / chat** are **forwarded** to that client. The **model, credentials, and tool execution** for that turn live on the **IDE or CLI host**; the gateway streams progress back (`agent.stream`-style events) and still ties replies to the right channel/session.
+4. When the client disconnects, those registrations are **removed** so routing does not point at a dead backend.
+
+**Why use it**
+
+- **Keys and models stay on the IDE or CLI machine** for that path—useful when the gateway host should not hold provider credentials for those runs.
+- **IDE:** workspace context (open files, project root) stays in the editor while messages flow through your normal OpenClaw channels.
+- **CLI:** run a headless or scripted external agent (servers, SSH sessions, automation) with the same routing and streaming behavior as the editor.
+- **Several external agents** can register at once (different ids or workspaces) and appear alongside config-defined agents in listings.
+
+**Example (CLI via gateway)**
+
+With the gateway running and **Agenthippo** (IDE or CLI) connected so `data-analyst` is registered as an external agent, trigger a turn from your dev tree or any machine that can reach the gateway:
+
+```bash
+pnpm openclaw agent --agent data-analyst --session-id h3 --message "double that"
+```
+
+If you use a global install, use `openclaw` instead of `pnpm openclaw`. Replace `data-analyst`, `h3`, and the message with your agent id, session id, and prompt. See [CLI: agent](https://docs.openclaw.ai/cli/agent) for flags (`--deliver`, `--thinking`, etc.).
+
+**Repo and upstream**
+
+- This project: [github.com/agenthippoai/hippoclaw](https://github.com/agenthippoai/hippoclaw)
+- Upstream OpenClaw: [github.com/openclaw/openclaw](https://github.com/openclaw/openclaw)
+
+Install, pairing, and CLI usage are documented with **Agenthippo** (extension and CLI); the gateway behavior above is what HippoClaw exposes on the wire.
+
 ## Development channels
 
 - **stable**: tagged releases (`vYYYY.M.D` or `vYYYY.M.D-<patch>`), npm dist-tag `latest`.
@@ -93,9 +128,11 @@ Details: [Development channels](https://docs.openclaw.ai/install/development-cha
 
 Prefer `pnpm` for builds from source. Bun is optional for running TypeScript directly.
 
+**HippoClaw** (this repo):
+
 ```bash
-git clone https://github.com/openclaw/openclaw.git
-cd openclaw
+git clone https://github.com/agenthippoai/hippoclaw.git
+cd hippoclaw
 
 pnpm install
 pnpm ui:build # auto-installs UI deps on first run
@@ -106,6 +143,8 @@ pnpm openclaw onboard --install-daemon
 # Dev loop (auto-reload on TS changes)
 pnpm gateway:watch
 ```
+
+Upstream **OpenClaw** lives at [github.com/openclaw/openclaw](https://github.com/openclaw/openclaw); use that clone if you want vanilla upstream without Agenthippo external-agent routing.
 
 Note: `pnpm openclaw ...` runs TypeScript directly (via `tsx`). `pnpm build` produces `dist/` for running via Node / the packaged `openclaw` binary.
 

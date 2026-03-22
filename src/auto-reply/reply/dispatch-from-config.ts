@@ -1,4 +1,8 @@
-import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import {
+  resolveDefaultAgentId,
+  resolveInboundEffectiveAgentId,
+  resolveSessionAgentId,
+} from "../../agents/agent-scope.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
   loadSessionStore,
@@ -7,6 +11,16 @@ import {
   type SessionEntry,
 } from "../../config/sessions.js";
 import { shouldSuppressLocalDiscordExecApprovalPrompt } from "../../discord/exec-approvals.js";
+import { requestNewExternalSession } from "../../gateway/external-agent-handlers.js";
+import {
+  cancelExternalAgentRun,
+  cancelExternalAgentRunByPeerKey,
+  isExternalAgent,
+  routeToExternalAgent,
+  sendCancelToExternalAgent,
+  type ExternalAgentStreamEvent,
+  type MediaAttachment,
+} from "../../gateway/external-agent-router.js";
 import { logVerbose } from "../../globals.js";
 import { fireAndForgetHook } from "../../hooks/fire-and-forget.js";
 import { createInternalHookEvent, triggerInternalHook } from "../../hooks/internal-hooks.js";
@@ -23,11 +37,15 @@ import {
   logSessionStateChange,
 } from "../../logging/diagnostic.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import {
+  isIdeGatewayExternalAgentId,
+  resolveInboundAgentSessionKey,
+} from "../../routing/session-key.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { maybeApplyTtsToPayload, normalizeTtsAutoMode, resolveTtsConfig } from "../../tts/tts.js";
 import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../../utils/message-channel.js";
 import { getReplyFromConfig } from "../reply.js";
-import type { FinalizedMsgContext } from "../templating.js";
+import type { FinalizedMsgContext, MsgContext } from "../templating.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { formatAbortReplyText, tryFastAbortFromMessage } from "./abort.js";
 import { shouldBypassAcpDispatchForCommand, tryDispatchAcpReply } from "./dispatch-acp.js";
@@ -36,6 +54,248 @@ import type { ReplyDispatcher, ReplyDispatchKind } from "./reply-dispatcher.js";
 import { shouldSuppressReasoningPayload } from "./reply-payloads.js";
 import { isRoutableChannel, routeReply } from "./route-reply.js";
 import { resolveRunTypingPolicy } from "./typing-policy.js";
+
+// ============================================================================
+// External Agent Reply Resolver
+// ============================================================================
+
+/**
+ * Create a reply resolver for external agents (e.g., IDE agents connected via gateway).
+ *
+ * This is a drop-in replacement for `getReplyFromConfig` that routes messages to
+ * an external agent backend instead of running the embedded Pi agent.
+ *
+ * By plugging into the same `replyResolver` interface, external agents automatically
+ * get all channel delivery features: typing indicators, ack reactions, block streaming,
+ * TTS, reply threading, response prefix, and diagnostic events.
+ *
+ * ## What the external agent path SKIPS (left to the external agent):
+ *
+ * - **Media understanding** — no image/audio/video pre-processing via vision or
+ *   transcription models. The external agent receives raw file paths and handles
+ *   media directly (e.g., the IDE agent can read images from disk).
+ *
+ * - **Session management** — no OpenClaw session store, compaction, or transcript
+ *   persistence. The external agent (IDE) manages its own sessions.
+ *
+ * - **Model selection / API keys** — no model resolution or auth profile lookup.
+ *   The external agent uses its own model configuration.
+ *
+ * - **Command parsing** — no skill/directive/command processing. The raw message
+ *   text is forwarded as-is.
+ *
+ * - **Workspace/agent dir setup** — no personality files, memory, or notes loading.
+ *   The external agent has its own workspace.
+ *
+ * - **Link understanding** — no URL preview/extraction.
+ */
+function createExternalAgentReplyResolver(
+  agentId: string,
+  channel: string,
+  messageId: string | undefined,
+): typeof getReplyFromConfig {
+  return async (
+    ctx: MsgContext,
+    _opts?: GetReplyOptions,
+    _cfg?: OpenClawConfig,
+  ): Promise<ReplyPayload | ReplyPayload[] | undefined> => {
+    // Intercept /new and /reset — trigger session.new on the IDE instead of
+    // forwarding as text (which would bypass session reset and confuse the agent).
+    const rawCmd = (ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "").trim().toLowerCase();
+    if (rawCmd === "/new" || rawCmd === "/reset") {
+      const sessionKey = ctx.SessionKey;
+      const result = await requestNewExternalSession(agentId, channel, undefined, sessionKey);
+      if (result.success) {
+        return { text: "✅ New session started." };
+      }
+      return { text: `⚠️ Failed to start new session: ${result.error ?? "unknown error"}` };
+    }
+
+    // Strip <media:*> placeholders — they're for the internal media understanding pipeline.
+    // External agents receive raw file paths instead and handle media directly.
+    const stripMediaTags = (text: string) =>
+      text.replace(/<media:\w+>(\s*\([^)]*\))?/gi, "").trim();
+    const rawBody =
+      typeof ctx.BodyForCommands === "string"
+        ? ctx.BodyForCommands
+        : typeof ctx.RawBody === "string"
+          ? ctx.RawBody
+          : typeof ctx.Body === "string"
+            ? ctx.Body
+            : "";
+    const messageBody = stripMediaTags(rawBody);
+
+    // Build media attachments from context and include file paths in message body.
+    // External agents handle files directly — no vision/transcription pre-processing.
+    const attachments: MediaAttachment[] = [];
+    const mediaPaths = ctx.MediaPaths ?? (ctx.MediaPath ? [ctx.MediaPath] : []);
+    const mediaUrls = ctx.MediaUrls ?? (ctx.MediaUrl ? [ctx.MediaUrl] : []);
+    const mediaTypes = ctx.MediaTypes ?? (ctx.MediaType ? [ctx.MediaType] : []);
+    for (let i = 0; i < Math.max(mediaPaths.length, mediaUrls.length); i++) {
+      const mimeType = mediaTypes[i] ?? "";
+      const kind = mimeType.startsWith("image")
+        ? ("image" as const)
+        : mimeType.startsWith("audio")
+          ? ("audio" as const)
+          : mimeType.startsWith("video")
+            ? ("video" as const)
+            : ("document" as const);
+      attachments.push({
+        type: kind,
+        path: mediaPaths[i],
+        url: mediaUrls[i],
+        mimeType: mimeType || undefined,
+      });
+    }
+
+    let fullMessageBody = messageBody;
+    if (attachments.length > 0) {
+      const fileRefs = attachments.map((a) => a.path || a.url || "").filter(Boolean);
+      if (fileRefs.length > 0) {
+        const fileList =
+          fileRefs.length === 1
+            ? `The user sent a file: ${fileRefs[0]}`
+            : `The user sent ${fileRefs.length} files:\n${fileRefs.map((f) => `- ${f}`).join("\n")}`;
+        fullMessageBody = fullMessageBody ? `${fileList}\n\n${fullMessageBody}` : fileList;
+      }
+    }
+
+    const sessionKey = ctx.SessionKey;
+
+    // Drive typing indicators while waiting for external agent response.
+    // Telegram typing expires after ~5s, so refresh every 4s.
+    const TYPING_INTERVAL_MS = 4000;
+    const onReplyStart = _opts?.onReplyStart;
+    if (onReplyStart) {
+      try {
+        await onReplyStart();
+      } catch {
+        // Best-effort typing signal.
+      }
+    }
+    const typingTimer = onReplyStart
+      ? setInterval(() => {
+          void Promise.resolve(onReplyStart()).catch(() => {});
+        }, TYPING_INTERVAL_MS)
+      : undefined;
+
+    // Strip thinking tokens from response text.
+    const stripThinking = (text: string) =>
+      text.replace(/<thinking>[\s\S]*?<\/thinking>\s*/g, "").trim();
+
+    // Block streaming for external agents: emit text blocks at natural boundaries
+    // (text → thinking and text → tool_start transitions). This delivers intermediate
+    // responses as soon as a text block completes, without waiting for the full agent
+    // turn and without spamming a bubble on every streaming delta.
+    // If the agent writes a single text block with no tools or thinking breaks,
+    // no intermediate blocks are emitted — a single final message is sent.
+    // Draft streaming (onPartialReply, single-message in-place edit) is also supported
+    // when the channel provides it (Telegram private chats with topics enabled).
+    const onBlockReply = _opts?.disableBlockStreaming ? undefined : _opts?.onBlockReply;
+    const onPartialReply = _opts?.onPartialReply;
+    let lastStreamedText = "";
+    let latestCleanedText = "";
+    // Track the accumulated text at each block emission point.
+    // The final reply sends only text after the last emitted block.
+    let lastBlockCleanedText = "";
+
+    const maybeEmitBlock = () => {
+      if (!onBlockReply || latestCleanedText === lastBlockCleanedText) {
+        return;
+      }
+      const blockText = latestCleanedText.trim();
+      if (blockText) {
+        lastBlockCleanedText = latestCleanedText;
+        void Promise.resolve(onBlockReply({ text: blockText })).catch(() => {});
+      }
+    };
+
+    const onStream =
+      onBlockReply || onPartialReply
+        ? (event: ExternalAgentStreamEvent) => {
+            if (event.state === "delta" && event.text) {
+              const cleaned = stripThinking(event.text);
+              if (!cleaned) {
+                return;
+              }
+              latestCleanedText = cleaned;
+
+              // Draft streaming: edit a single message in-place with accumulated text.
+              if (onPartialReply && cleaned !== lastStreamedText) {
+                void Promise.resolve(onPartialReply({ text: cleaned })).catch(() => {});
+                lastStreamedText = cleaned;
+              }
+            }
+
+            // Emit a block reply at natural boundaries: when the agent transitions
+            // from text to thinking or from text to tool use, the preceding text
+            // block is complete and can be sent to the channel immediately.
+            if (
+              event.state === "thinking" ||
+              (event.state === "tool" && event.toolState === "start")
+            ) {
+              maybeEmitBlock();
+            }
+          }
+        : undefined;
+
+    let result: { text: string; runId?: string };
+    try {
+      result = await routeToExternalAgent(
+        agentId,
+        {
+          message: fullMessageBody,
+          agentId,
+          sessionKey,
+          channel,
+          senderUsername: typeof ctx.SenderUsername === "string" ? ctx.SenderUsername : undefined,
+          senderName: typeof ctx.SenderName === "string" ? ctx.SenderName : undefined,
+          senderId: typeof ctx.SenderId === "string" ? ctx.SenderId : String(ctx.SenderId ?? ""),
+          attachments: attachments.length > 0 ? attachments : undefined,
+          idempotencyKey: `channel:${messageId ?? Date.now()}`,
+        },
+        { onStream },
+      );
+    } catch (err) {
+      // If cancelled by user abort, return silently — the abort message
+      // is sent from the second message's dispatch path.
+      if (err instanceof Error && err.message.includes("cancelled by user")) {
+        return undefined;
+      }
+      throw err;
+    } finally {
+      if (typingTimer) {
+        clearInterval(typingTimer);
+      }
+    }
+
+    // Strip thinking tokens from the final response.
+    const replyText = stripThinking(result.text?.trim() ?? "");
+
+    if (!replyText) {
+      return undefined;
+    }
+
+    // If blocks were sent, only return text that appeared after the last block.
+    // Each block contains the full accumulated text up to that boundary, so
+    // return only the suffix when the final text starts with what was sent.
+    if (lastBlockCleanedText) {
+      const lastBlock = lastBlockCleanedText.trim();
+      if (replyText.length <= lastBlock.length) {
+        return undefined; // Nothing new after the last block.
+      }
+      if (replyText.startsWith(lastBlock)) {
+        const remaining = replyText.slice(lastBlock.length).trim();
+        return remaining ? { text: remaining } : undefined;
+      }
+      // Fallback: if the final text doesn't start with the last block,
+      // return it as-is to avoid dropping content.
+      return { text: replyText };
+    }
+
+    return { text: replyText };
+  };
+}
 
 const AUDIO_PLACEHOLDER_RE = /^<media:audio>(\s*\([^)]*\))?$/i;
 const AUDIO_HEADER_RE = /^\[Audio\b/i;
@@ -78,9 +338,7 @@ const resolveSessionStoreLookup = (
   sessionKey?: string;
   entry?: SessionEntry;
 } => {
-  const targetSessionKey =
-    ctx.CommandSource === "native" ? ctx.CommandTargetSessionKey?.trim() : undefined;
-  const sessionKey = (targetSessionKey ?? ctx.SessionKey)?.trim();
+  const sessionKey = resolveInboundAgentSessionKey(ctx);
   if (!sessionKey) {
     return {};
   }
@@ -274,9 +532,59 @@ export async function dispatchReplyFromConfig(params: {
 
   markProcessing();
 
+  // Resolve the reply resolver: use external agent resolver if the target is external,
+  // otherwise fall through to the standard embedded agent path (getReplyFromConfig).
+  // If the session is bound to a non-default agent that isn't currently connected,
+  // return a friendly error instead of falling through to the embedded Pi agent.
+  // (agenthippo3 behavior: only the default agent uses embedded; secondary agents are
+  // external backends or show "not connected".)
+  //
+  // If the IDE agent id is also marked `default` in config, targetAgentId === defaultAgentId
+  // unless we treat `ide-*` explicitly — otherwise the gateway runs embedded Pi for that id
+  // and fails (no API keys in the IDE agentDir on the gateway).
+  //
+  // Native commands (e.g., Telegram /new) use a synthetic SessionKey like
+  // "telegram:slash:PEERID" which doesn't contain the agent ID. The actual
+  // agent-prefixed session key is in CommandTargetSessionKey — use it when present.
+  const targetAgentId = resolveInboundEffectiveAgentId(ctx, cfg);
+  const defaultAgentId = resolveDefaultAgentId(cfg);
+  const useDisconnectedStub =
+    isIdeGatewayExternalAgentId(targetAgentId) ||
+    (targetAgentId !== defaultAgentId && cfg.acp?.enabled !== true);
+  const replyResolver = isExternalAgent(targetAgentId)
+    ? createExternalAgentReplyResolver(targetAgentId, channel, messageId)
+    : useDisconnectedStub
+      ? async () => ({
+          text: "⚠️ Agent is not connected. Connect your editor (Agent Anywhere) to the OpenClaw gateway.",
+        })
+      : (params.replyResolver ?? getReplyFromConfig);
+
   try {
     const fastAbort = await tryFastAbortFromMessage({ ctx, cfg });
     if (fastAbort.handled) {
+      // Cancel pending external agent run if the target is external.
+      // This both rejects the pending promise (gateway-side) and tells the IDE to stop.
+      if (sessionKey && isExternalAgent(targetAgentId)) {
+        // Direct match: the abort message resolves to an external agent
+        cancelExternalAgentRun(sessionKey);
+        sendCancelToExternalAgent(targetAgentId, sessionKey);
+      } else {
+        // Indirect match: abort message may use a different sessionKey format
+        // (e.g., Telegram /stop uses "telegram:slash:PEERID" while the active
+        // run has "agent:ide-myagent1:dm:PEERID"). Look up by exact peer key
+        // ({channel}:{senderId}) which is indexed when the run starts.
+        const peerChannel = (
+          ctx.OriginatingChannel ??
+          ctx.Surface ??
+          ctx.Provider ??
+          ""
+        ).toLowerCase();
+        const peerId = String(ctx.SenderId ?? "");
+        const match = cancelExternalAgentRunByPeerKey(peerChannel, peerId);
+        if (match) {
+          sendCancelToExternalAgent(match.agentId, match.sessionKey);
+        }
+      }
       const payload = {
         text: formatAbortReplyText(fastAbort.stoppedSubagents),
       } satisfies ReplyPayload;
@@ -403,7 +711,7 @@ export async function dispatchReplyFromConfig(params: {
       systemEvent: shouldRouteToOriginating,
     });
 
-    const replyResult = await (params.replyResolver ?? getReplyFromConfig)(
+    const replyResult = await replyResolver(
       ctx,
       {
         ...params.replyOptions,

@@ -6,8 +6,10 @@ import {
 } from "../sessions/session-key-utils.js";
 import {
   classifySessionKeyShape,
+  isIdeGatewayExternalAgentId,
   isValidAgentId,
   parseAgentSessionKey,
+  resolveInboundAgentSessionKey,
   toAgentStoreSessionKey,
 } from "./session-key.js";
 
@@ -128,5 +130,50 @@ describe("isValidAgentId", () => {
     expect(isValidAgentId("Agent not found: xyz")).toBe(false);
     expect(isValidAgentId("../../../etc/passwd")).toBe(false);
     expect(isValidAgentId("a".repeat(65))).toBe(false);
+  });
+});
+
+describe("isIdeGatewayExternalAgentId", () => {
+  it("matches ide- prefixed ids", () => {
+    expect(isIdeGatewayExternalAgentId("ide-agenthippo-vscode")).toBe(true);
+    expect(isIdeGatewayExternalAgentId("IDE-live")).toBe(true);
+  });
+
+  it("rejects non-ide ids", () => {
+    expect(isIdeGatewayExternalAgentId("main")).toBe(false);
+    expect(isIdeGatewayExternalAgentId("ide")).toBe(false);
+    expect(isIdeGatewayExternalAgentId("identifier")).toBe(false);
+  });
+});
+
+describe("resolveInboundAgentSessionKey", () => {
+  it("uses CommandTargetSessionKey for native when set", () => {
+    expect(
+      resolveInboundAgentSessionKey({
+        CommandSource: "native",
+        CommandTargetSessionKey: "agent:ide-x:telegram:dm:1",
+        SessionKey: "telegram:slash:1",
+      }),
+    ).toBe("agent:ide-x:telegram:dm:1");
+  });
+
+  it("falls back to SessionKey when native target is empty", () => {
+    expect(
+      resolveInboundAgentSessionKey({
+        CommandSource: "native",
+        CommandTargetSessionKey: "",
+        SessionKey: "agent:ide-x:telegram:dm:1",
+      }),
+    ).toBe("agent:ide-x:telegram:dm:1");
+  });
+
+  it("ignores CommandTargetSessionKey when not native", () => {
+    expect(
+      resolveInboundAgentSessionKey({
+        CommandSource: "message",
+        CommandTargetSessionKey: "agent:main:main",
+        SessionKey: "agent:ide-x:telegram:dm:1",
+      }),
+    ).toBe("agent:ide-x:telegram:dm:1");
   });
 });

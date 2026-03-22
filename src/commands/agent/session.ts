@@ -21,7 +21,11 @@ import {
   resolveStorePath,
   type SessionEntry,
 } from "../../config/sessions.js";
-import { normalizeMainKey } from "../../routing/session-key.js";
+import {
+  normalizeAgentId,
+  normalizeMainKey,
+  toAgentStoreSessionKey,
+} from "../../routing/session-key.js";
 
 export type SessionResolution = {
   sessionId: string;
@@ -50,12 +54,60 @@ export function resolveSessionKeyForRequest(opts: {
   const sessionCfg = opts.cfg.session;
   const scope = sessionCfg?.scope ?? "per-sender";
   const mainKey = normalizeMainKey(sessionCfg?.mainKey);
-  const explicitSessionKey =
-    opts.sessionKey?.trim() ||
-    resolveExplicitAgentSessionKey({
-      cfg: opts.cfg,
-      agentId: opts.agentId,
+  const trimmedSessionKey = opts.sessionKey?.trim();
+  const trimmedSessionId = opts.sessionId?.trim();
+  const normalizedAgentId = opts.agentId?.trim()
+    ? normalizeAgentId(opts.agentId.trim())
+    : undefined;
+
+  let explicitSessionKey = trimmedSessionKey;
+
+  // `--agent X --session-id Y` must not collapse to X's main session key; otherwise every CLI
+  // thread hits the same gateway row and the IDE routes to one chat (see buildIdeSessionRouteKey).
+  if (!explicitSessionKey && trimmedSessionId && normalizedAgentId) {
+    const agentScopedStorePath = resolveStorePath(sessionCfg?.store, {
+      agentId: normalizedAgentId,
     });
+    const agentScopedStore = loadSessionStore(agentScopedStorePath);
+    const foundInAgentStore = Object.keys(agentScopedStore).find(
+      (key) => agentScopedStore[key]?.sessionId === trimmedSessionId,
+    );
+    if (foundInAgentStore) {
+      return {
+        sessionKey: foundInAgentStore,
+        sessionStore: agentScopedStore,
+        storePath: agentScopedStorePath,
+      };
+    }
+
+    const allAgentIds = listAgentIds(opts.cfg);
+    for (const aid of allAgentIds) {
+      if (normalizeAgentId(aid) === normalizedAgentId) {
+        continue;
+      }
+      const altStorePath = resolveStorePath(sessionCfg?.store, { agentId: aid });
+      const altStore = loadSessionStore(altStorePath);
+      const foundKey = Object.keys(altStore).find(
+        (key) => altStore[key]?.sessionId === trimmedSessionId,
+      );
+      if (foundKey) {
+        return { sessionKey: foundKey, sessionStore: altStore, storePath: altStorePath };
+      }
+    }
+
+    explicitSessionKey = toAgentStoreSessionKey({
+      agentId: normalizedAgentId,
+      requestKey: trimmedSessionId,
+      mainKey,
+    });
+  }
+
+  if (!explicitSessionKey && normalizedAgentId) {
+    explicitSessionKey = resolveExplicitAgentSessionKey({
+      cfg: opts.cfg,
+      agentId: normalizedAgentId,
+    });
+  }
   const storeAgentId = resolveAgentIdFromSessionKey(explicitSessionKey);
   const storePath = resolveStorePath(sessionCfg?.store, {
     agentId: storeAgentId,

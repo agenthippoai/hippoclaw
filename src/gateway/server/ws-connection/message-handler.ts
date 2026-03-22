@@ -33,6 +33,8 @@ import {
   mintCanvasCapabilityToken,
 } from "../../canvas-capability.js";
 import { normalizeDeviceMetadataForAuth } from "../../device-auth.js";
+import { tryHandleExternalAgentFrame } from "../../external-agent-frames.js";
+import { CLI_DEFAULT_OPERATOR_SCOPES } from "../../method-scopes.js";
 import {
   isLocalishHost,
   isLoopbackAddress,
@@ -41,7 +43,7 @@ import {
 } from "../../net.js";
 import { resolveNodeCommandAllowlist } from "../../node-command-policy.js";
 import { checkBrowserOrigin } from "../../origin-check.js";
-import { GATEWAY_CLIENT_IDS } from "../../protocol/client-info.js";
+import { GATEWAY_CLIENT_IDS, GATEWAY_CLIENT_MODES } from "../../protocol/client-info.js";
 import {
   ConnectErrorDetailCodes,
   resolveDeviceAuthConnectErrorDetailCode,
@@ -396,7 +398,9 @@ export function attachGatewayWsMessageHandler(params: {
         }
         // Default-deny: scopes must be explicit. Empty/missing scopes means no permissions.
         // Note: If the client does not present a device identity, we can't bind scopes to a paired
-        // device/token, so we will clear scopes after auth to avoid self-declared permissions.
+        // device/token, so we clear client-declared scopes after auth (GHSA-rqpp-rjj8-7wv8).
+        // Trusted shared-token `agent-backend` connections then receive server-assigned CLI
+        // operator scopes (not client-controlled).
         let scopes = Array.isArray(connectParams.scopes) ? connectParams.scopes : [];
         connectParams.role = role;
         connectParams.scopes = scopes;
@@ -532,10 +536,20 @@ export function attachGatewayWsMessageHandler(params: {
             isLocalClient,
           });
           // Shared token/password auth can bypass pairing for trusted operators, but
-          // device-less backend clients must not self-declare scopes. Control UI
-          // keeps its explicitly allowed device-less scopes on the allow path.
+          // device-less clients must not self-declare scopes. Control UI keeps its
+          // explicitly allowed device-less scopes on the allow path.
           if (!device && (!isControlUi || decision.kind !== "allow")) {
             clearUnboundScopes();
+          }
+          if (
+            !device &&
+            decision.kind === "allow" &&
+            sharedAuthOk &&
+            role === "operator" &&
+            connectParams.client.mode === GATEWAY_CLIENT_MODES.AGENT_BACKEND
+          ) {
+            scopes = [...CLI_DEFAULT_OPERATOR_SCOPES];
+            connectParams.scopes = scopes;
           }
           if (decision.kind === "allow") {
             return true;
@@ -1050,6 +1064,13 @@ export function attachGatewayWsMessageHandler(params: {
         void refreshGatewayHealthSnapshot({ probe: true }).catch((err) =>
           logHealth.error(`post-connect health refresh failed: ${formatError(err)}`),
         );
+        return;
+      }
+
+      // Handle response/event frames from agent-backend clients (IDE, etc.)
+      if (
+        tryHandleExternalAgentFrame(parsed, connId, getClient, buildRequestContext, logWs).handled
+      ) {
         return;
       }
 

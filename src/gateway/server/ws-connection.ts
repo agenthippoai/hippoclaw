@@ -8,6 +8,7 @@ import { truncateUtf16Safe } from "../../utils.js";
 import { isWebchatClient } from "../../utils/message-channel.js";
 import type { AuthRateLimiter } from "../auth-rate-limit.js";
 import type { ResolvedGatewayAuth } from "../auth.js";
+import { cleanupExternalAgentsOnDisconnect } from "../external-agent-registry.js";
 import { isLoopbackAddress } from "../net.js";
 import { getHandshakeTimeoutMs } from "../server-constants.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "../server-methods/types.js";
@@ -250,6 +251,12 @@ export function attachGatewayWsConnectionHandler(params: AttachGatewayWsConnecti
           context.nodeUnsubscribeAll(nodeId);
         }
       }
+      // Cleanup external agents registered by this connection
+      const context = buildRequestContext();
+      cleanupExternalAgentsOnDisconnect(connId, {
+        logInfo: (msg) => context.logGateway.info(msg),
+        broadcast: context.broadcast,
+      });
       logWs("out", "close", {
         connId,
         code,

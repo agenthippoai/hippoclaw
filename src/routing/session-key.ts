@@ -106,6 +106,32 @@ export function normalizeAgentId(value: string | undefined | null): string {
   );
 }
 
+/**
+ * Gateway-external IDE backends (Agent Anywhere, etc.) use ids with the `ide-` prefix.
+ * These agents never run as embedded Pi on the gateway — model/auth live in the editor.
+ */
+export function isIdeGatewayExternalAgentId(agentId: string): boolean {
+  return normalizeAgentId(agentId).startsWith("ide-");
+}
+
+/**
+ * Canonical session key for resolving agent id from inbound message context.
+ * Matches `getReplyFromConfig` and `dispatch-from-config` (native slash commands
+ * target the session in `CommandTargetSessionKey` when set).
+ */
+export function resolveInboundAgentSessionKey(ctx: {
+  SessionKey?: string;
+  CommandSource?: string;
+  CommandTargetSessionKey?: string;
+}): string | undefined {
+  const sessionKey = ctx.SessionKey?.trim();
+  if (ctx.CommandSource !== "native") {
+    return sessionKey;
+  }
+  const explicit = ctx.CommandTargetSessionKey?.trim();
+  return explicit || sessionKey;
+}
+
 export function isValidAgentId(value: string | undefined | null): boolean {
   const trimmed = (value ?? "").trim();
   return Boolean(trimmed) && VALID_ID_RE.test(trimmed);

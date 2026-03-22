@@ -7,6 +7,7 @@ import {
 } from "../../agents/spawned-context.js";
 import { buildBareSessionResetPrompt } from "../../auto-reply/reply/session-reset-prompt.js";
 import { agentCommandFromIngress } from "../../commands/agent.js";
+import { resolveSessionKeyForRequest } from "../../commands/agent/session.js";
 import { loadConfig } from "../../config/config.js";
 import {
   mergeSessionEntry,
@@ -36,6 +37,7 @@ import {
 import { resolveAssistantIdentity } from "../assistant-identity.js";
 import { parseMessageWithAttachments } from "../chat-attachments.js";
 import { resolveAssistantAvatarUrl } from "../control-ui-shared.js";
+import { isExternalAgent, tryRouteAgentMethodToExternal } from "../external-agent-handlers.js";
 import { ADMIN_SCOPE } from "../method-scopes.js";
 import { GATEWAY_CLIENT_CAPS, hasGatewayClientCap } from "../protocol/client-info.js";
 import {
@@ -253,7 +255,8 @@ export const agentHandlers: GatewayRequestHandlers = {
 
     const agentIdRaw = typeof request.agentId === "string" ? request.agentId.trim() : "";
     const agentId = agentIdRaw ? normalizeAgentId(agentIdRaw) : undefined;
-    if (agentId) {
+    const isExternal = agentId ? isExternalAgent(agentId) : false;
+    if (agentId && !isExternal) {
       const knownAgents = listAgentIds(cfg);
       if (!knownAgents.includes(agentId)) {
         respond(
@@ -268,10 +271,20 @@ export const agentHandlers: GatewayRequestHandlers = {
       }
     }
 
-    const requestedSessionKeyRaw =
+    let requestedSessionKeyRaw =
       typeof request.sessionKey === "string" && request.sessionKey.trim()
         ? request.sessionKey.trim()
         : undefined;
+    if (!requestedSessionKeyRaw && request.sessionId?.trim() && agentId) {
+      const resolved = resolveSessionKeyForRequest({
+        cfg,
+        sessionId: request.sessionId.trim(),
+        agentId,
+      });
+      if (resolved.sessionKey) {
+        requestedSessionKeyRaw = resolved.sessionKey;
+      }
+    }
     if (
       requestedSessionKeyRaw &&
       classifySessionKeyShape(requestedSessionKeyRaw) === "malformed_agent"
@@ -579,6 +592,26 @@ export const agentHandlers: GatewayRequestHandlers = {
     respond(true, accepted, undefined, { runId });
 
     const resolvedThreadId = explicitThreadId ?? deliveryPlan.resolvedThreadId;
+
+    if (
+      agentId &&
+      isExternal &&
+      tryRouteAgentMethodToExternal({
+        agentId,
+        message,
+        sessionKey: requestedSessionKey,
+        sessionId: resolvedSessionId,
+        channel: resolvedChannel,
+        idempotencyKey: idem,
+        runId,
+        context,
+        respond,
+        errorShape,
+        errorCode: ErrorCodes.UNAVAILABLE,
+      })
+    ) {
+      return;
+    }
 
     dispatchAgentRunFromGateway({
       ingressOpts: {

@@ -327,6 +327,8 @@ export type AgentsListResult = {
   mainKey: string;
   scope: string;
   agents: GatewayAgentRow[];
+  /** Runtime-registered agents (e.g. IDE via agent-backend); absent on older gateways. */
+  external?: GatewayAgentRow[];
 };
 
 export type AgentIdentityResult = {

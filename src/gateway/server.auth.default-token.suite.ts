@@ -164,6 +164,17 @@ export function registerDefaultAuthTokenSuite(): void {
           expectStatusError: "missing scope",
         },
         {
+          name: "operator + valid shared token + agent-backend => server-assigned CLI scopes",
+          opts: {
+            role: "operator",
+            token,
+            device: null,
+            client: { ...TEST_OPERATOR_CLIENT, mode: GATEWAY_CLIENT_MODES.AGENT_BACKEND },
+          },
+          expectConnectOk: true,
+          expectStatusOk: true,
+        },
+        {
           name: "node + valid shared token => rejected without device",
           opts: { role: "node", token, device: null, client: NODE_CLIENT },
           expectConnectOk: false,

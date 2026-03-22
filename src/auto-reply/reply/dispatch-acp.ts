@@ -21,7 +21,11 @@ import {
   normalizeAttachmentPath,
   normalizeAttachments,
 } from "../../media-understanding/attachments.normalize.js";
-import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import {
+  isIdeGatewayExternalAgentId,
+  normalizeAgentId,
+  resolveAgentIdFromSessionKey,
+} from "../../routing/session-key.js";
 import { maybeApplyTtsToPayload, resolveTtsConfig } from "../../tts/tts.js";
 import {
   isCommandEnabled,
@@ -215,6 +219,20 @@ export async function tryDispatchAcpReply(params: {
     return null;
   }
 
+  const resolvedAcpAgent =
+    acpResolution.kind === "ready"
+      ? (
+          acpResolution.meta.agent?.trim() ||
+          params.cfg.acp?.defaultAgent?.trim() ||
+          resolveAgentIdFromSessionKey(sessionKey)
+        ).trim()
+      : resolveAgentIdFromSessionKey(sessionKey);
+  // IDE backends (Agent Anywhere) never run embedded Pi or ACP turns on the gateway;
+  // model/auth live in the editor. Fall through to dispatch-from-config (external or stub).
+  if (isIdeGatewayExternalAgentId(normalizeAgentId(resolvedAcpAgent))) {
+    return null;
+  }
+
   let queuedFinal = false;
   const delivery = createAcpDispatchDeliveryCoordinator({
     cfg: params.cfg,
@@ -241,14 +259,6 @@ export async function tryDispatchAcpReply(params: {
         accountIdRaw: params.ctx.AccountId,
       }));
 
-  const resolvedAcpAgent =
-    acpResolution.kind === "ready"
-      ? (
-          acpResolution.meta.agent?.trim() ||
-          params.cfg.acp?.defaultAgent?.trim() ||
-          resolveAgentIdFromSessionKey(sessionKey)
-        ).trim()
-      : resolveAgentIdFromSessionKey(sessionKey);
   const projector = createAcpReplyProjector({
     cfg: params.cfg,
     shouldSendToolSummaries: params.shouldSendToolSummaries,

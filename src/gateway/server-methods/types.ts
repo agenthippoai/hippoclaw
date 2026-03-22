@@ -21,6 +21,8 @@ export type GatewayClient = {
   canvasHostUrl?: string;
   canvasCapability?: string;
   canvasCapabilityExpiresAtMs?: number;
+  /** WebSocket instance (e.g. agent-backend / IDE bridge). */
+  socket?: import("ws").WebSocket;
 };
 
 export type RespondFn = (

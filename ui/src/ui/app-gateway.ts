@@ -347,6 +347,12 @@ function handleGatewayEventUnsafe(host: GatewayHost, evt: GatewayEventFrame) {
     return;
   }
 
+  // Refresh agents list when external agents register/unregister
+  if (evt.event === "agents.updated") {
+    void loadAgents(host as unknown as OpenClawApp);
+    return;
+  }
+
   if (evt.event === "cron" && host.tab === "cron") {
     void loadCron(host as unknown as Parameters<typeof loadCron>[0]);
   }

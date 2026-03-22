@@ -1,5 +1,3 @@
-import { listAgentIds } from "../agents/agent-scope.js";
-import { formatCliCommand } from "../cli/command-format.js";
 import type { CliDeps } from "../cli/deps.js";
 import { withProgress } from "../cli/progress.js";
 import { loadConfig } from "../config/config.js";
@@ -96,14 +94,9 @@ export async function agentViaGatewayCommand(opts: AgentCliOpts, runtime: Runtim
   const cfg = loadConfig();
   const agentIdRaw = opts.agent?.trim();
   const agentId = agentIdRaw ? normalizeAgentId(agentIdRaw) : undefined;
-  if (agentId) {
-    const knownAgents = listAgentIds(cfg);
-    if (!knownAgents.includes(agentId)) {
-      throw new Error(
-        `Unknown agent id "${agentIdRaw}". Use "${formatCliCommand("openclaw agents list")}" to see configured agents.`,
-      );
-    }
-  }
+  // Note: We skip local agent validation here because the Gateway may have
+  // external agents registered at runtime (via agent-backend clients like IDE).
+  // The Gateway will validate the agent ID when processing the request.
   const timeoutSeconds = parseTimeoutSeconds({ cfg, timeout: opts.timeout });
   const gatewayTimeoutMs =
     timeoutSeconds === 0

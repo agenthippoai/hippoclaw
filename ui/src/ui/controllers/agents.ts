@@ -30,11 +30,17 @@ export async function loadAgents(state: AgentsState) {
   try {
     const res = await state.client.request<AgentsListResult>("agents.list", {});
     if (res) {
-      state.agentsList = res;
+      const externalAgents = res.external ?? [];
+      state.agentsList = {
+        defaultId: res.defaultId,
+        mainKey: res.mainKey,
+        scope: res.scope,
+        agents: [...res.agents, ...externalAgents],
+      };
       const selected = state.agentsSelectedId;
-      const known = res.agents.some((entry) => entry.id === selected);
+      const known = state.agentsList.agents.some((entry) => entry.id === selected);
       if (!selected || !known) {
-        state.agentsSelectedId = res.defaultId ?? res.agents[0]?.id ?? null;
+        state.agentsSelectedId = res.defaultId ?? state.agentsList.agents[0]?.id ?? null;
       }
     }
   } catch (err) {

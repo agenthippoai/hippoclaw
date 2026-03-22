@@ -122,6 +122,38 @@ describe("resolveSessionKeyForRequest", () => {
     expect(result.sessionKey).toBeUndefined();
   });
 
+  it("uses agent-scoped session key from --session-id when --agent is set (distinct IDE/CLI threads)", async () => {
+    setupMainAndMybotStorePaths();
+    mockStoresByPath({
+      [MYBOT_STORE_PATH]: {},
+    });
+
+    const result = resolveSessionKeyForRequest({
+      cfg: baseCfg,
+      agentId: "mybot",
+      sessionId: "h2",
+    });
+    expect(result.sessionKey).toBe("agent:mybot:h2");
+    expect(result.storePath).toBe(MYBOT_STORE_PATH);
+  });
+
+  it("resolves agent+sessionId to existing store row when sessionId matches that agent store", async () => {
+    setupMainAndMybotStorePaths();
+    mockStoresByPath({
+      [MYBOT_STORE_PATH]: {
+        "agent:mybot:dm:1": { sessionId: "persisted-uuid", updatedAt: 0 },
+      },
+    });
+
+    const result = resolveSessionKeyForRequest({
+      cfg: baseCfg,
+      agentId: "mybot",
+      sessionId: "persisted-uuid",
+    });
+    expect(result.sessionKey).toBe("agent:mybot:dm:1");
+    expect(result.storePath).toBe(MYBOT_STORE_PATH);
+  });
+
   it("does not search other stores when explicitSessionKey is set", async () => {
     mocks.listAgentIds.mockReturnValue(["main", "mybot"]);
     mocks.resolveStorePath.mockReturnValue(MAIN_STORE_PATH);

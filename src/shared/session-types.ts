@@ -10,6 +10,10 @@ export type GatewayAgentRow = {
   id: string;
   name?: string;
   identity?: GatewayAgentIdentity;
+  /** Hosted outside the gateway (for example IDE / Agent Anywhere). */
+  external?: boolean;
+  connId?: string;
+  workspace?: string;
 };
 
 export type SessionsListResultBase<TDefaults, TRow> = {

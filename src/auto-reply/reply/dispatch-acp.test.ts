@@ -234,6 +234,34 @@ describe("tryDispatchAcpReply", () => {
     bindingServiceMocks.listBySession.mockReturnValue([]);
   });
 
+  it("returns null for ide-* gateway agents so ACP does not run embedded Pi on the gateway", async () => {
+    const ideSessionKey = "agent:ide-agenthippo-vscode:telegram:direct:peer1";
+    managerMocks.resolveSession.mockReturnValue({
+      kind: "ready",
+      sessionKey: ideSessionKey,
+      meta: createAcpSessionMeta({ agent: "" }),
+    });
+    const result = await tryDispatchAcpReply({
+      ctx: buildTestCtx({
+        Provider: "telegram",
+        Surface: "telegram",
+        SessionKey: ideSessionKey,
+        BodyForAgent: "hello",
+      }),
+      cfg: createAcpConfigWithVisibleToolTags(),
+      dispatcher: createDispatcher().dispatcher,
+      sessionKey: ideSessionKey,
+      inboundAudio: false,
+      shouldRouteToOriginating: false,
+      shouldSendToolSummaries: true,
+      bypassForCommand: false,
+      recordProcessed: vi.fn(),
+      markIdle: vi.fn(),
+    });
+    expect(result).toBeNull();
+    expect(managerMocks.runTurn).not.toHaveBeenCalled();
+  });
+
   it("routes ACP block output to originating channel", async () => {
     setReadyAcpResolution();
     managerMocks.runTurn.mockImplementation(

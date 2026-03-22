@@ -4,6 +4,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import * as routingBindings from "./bindings.js";
 import {
   deriveLastRoutePolicy,
+  pickFirstExistingAgentId,
   resolveAgentRoute,
   resolveInboundLastRouteSessionKey,
 } from "./resolve-route.js";
@@ -406,6 +407,46 @@ describe("resolveAgentRoute", () => {
     });
     expect(route.agentId).toBe("home");
     expect(route.sessionKey).toBe("agent:home:main");
+  });
+});
+
+describe("pickFirstExistingAgentId", () => {
+  test("falls back to default when agent id is missing from agents.list", () => {
+    const cfg: OpenClawConfig = {
+      agents: { list: [{ id: "main", default: true }] },
+    };
+    expect(pickFirstExistingAgentId(cfg, "ghost-agent")).toBe("main");
+  });
+
+  test("preserves ide-* ids even when omitted from agents.list", () => {
+    const cfg: OpenClawConfig = {
+      agents: { list: [{ id: "main", default: true }] },
+    };
+    expect(pickFirstExistingAgentId(cfg, "ide-vscode")).toBe("ide-vscode");
+  });
+});
+
+describe("ide-* gateway-external agent routing", () => {
+  test("channel route binding keeps ide agent when agents.list has only embedded agents", () => {
+    const cfg: OpenClawConfig = {
+      agents: { list: [{ id: "main", default: true }] },
+      bindings: [
+        {
+          type: "route" as const,
+          agentId: "ide-workspace",
+          match: { channel: "telegram", accountId: "default" },
+        },
+      ],
+    };
+    const route = resolveAgentRoute({
+      cfg,
+      channel: "telegram",
+      accountId: "default",
+      peer: { kind: "direct", id: "12345" },
+    });
+    expect(route.agentId).toBe("ide-workspace");
+    expect(route.sessionKey).toBe("agent:ide-workspace:main");
+    expect(route.matchedBy).toBe("binding.account");
   });
 });
 
