@@ -2,8 +2,9 @@ import path from "node:path";
 
 export const DEFAULT_CLI_NAME = "openclaw";
 
-const KNOWN_CLI_NAMES = new Set([DEFAULT_CLI_NAME]);
-const CLI_PREFIX_RE = /^(?:((?:pnpm|npm|bunx|npx)\s+))?(openclaw)\b/;
+/** Binaries shipped by this package (`package.json` bin map). */
+const KNOWN_CLI_NAMES = new Set<string>([DEFAULT_CLI_NAME, "hippoclaw"]);
+const CLI_PREFIX_RE = /^(?:((?:pnpm|npm|bunx|npx)\s+))?(openclaw|hippoclaw)\b/;
 
 export function resolveCliName(argv: string[] = process.argv): string {
   const argv1 = argv[1];
@@ -24,7 +25,7 @@ export function replaceCliName(command: string, cliName = resolveCliName()): str
   if (!CLI_PREFIX_RE.test(command)) {
     return command;
   }
-  return command.replace(CLI_PREFIX_RE, (_match, runner: string | undefined) => {
+  return command.replace(CLI_PREFIX_RE, (_match, runner: string | undefined, _bin: string) => {
     return `${runner ?? ""}${cliName}`;
   });
 }
