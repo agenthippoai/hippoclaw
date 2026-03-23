@@ -101,6 +101,7 @@ package-lock.json
 .agents/
 .agents
 .agent/
+.agent-hippo/
 skills-lock.json
 
 # Local iOS signing overrides
