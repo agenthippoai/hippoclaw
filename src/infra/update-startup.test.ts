@@ -9,25 +9,12 @@ vi.mock("./openclaw-root.js", () => ({
   resolveOpenClawPackageRoot: vi.fn(),
 }));
 
-vi.mock("./update-check.js", async () => {
-  const parse = (value: string) => value.split(".").map((part) => Number.parseInt(part, 10));
-  const compareSemverStrings = (a: string, b: string) => {
-    const left = parse(a);
-    const right = parse(b);
-    for (let idx = 0; idx < 3; idx += 1) {
-      const l = left[idx] ?? 0;
-      const r = right[idx] ?? 0;
-      if (l !== r) {
-        return l < r ? -1 : 1;
-      }
-    }
-    return 0;
-  };
-
+vi.mock("./update-check.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./update-check.js")>();
   return {
+    ...actual,
     checkUpdateStatus: vi.fn(),
-    compareSemverStrings,
-    resolveNpmChannelTag: vi.fn(),
+    resolvePackageChannelTarget: vi.fn(),
   };
 });
 
@@ -47,7 +34,7 @@ describe("update-startup", () => {
 
   let resolveOpenClawPackageRoot: (typeof import("./openclaw-root.js"))["resolveOpenClawPackageRoot"];
   let checkUpdateStatus: (typeof import("./update-check.js"))["checkUpdateStatus"];
-  let resolveNpmChannelTag: (typeof import("./update-check.js"))["resolveNpmChannelTag"];
+  let resolvePackageChannelTarget: (typeof import("./update-check.js"))["resolvePackageChannelTarget"];
   let runCommandWithTimeout: (typeof import("../process/exec.js"))["runCommandWithTimeout"];
   let runGatewayUpdateCheck: (typeof import("./update-startup.js"))["runGatewayUpdateCheck"];
   let scheduleGatewayUpdateCheck: (typeof import("./update-startup.js"))["scheduleGatewayUpdateCheck"];
@@ -75,7 +62,7 @@ describe("update-startup", () => {
     // Perf: load mocked modules once (after timers/env are set up).
     if (!loaded) {
       ({ resolveOpenClawPackageRoot } = await import("./openclaw-root.js"));
-      ({ checkUpdateStatus, resolveNpmChannelTag } = await import("./update-check.js"));
+      ({ checkUpdateStatus, resolvePackageChannelTarget } = await import("./update-check.js"));
       ({ runCommandWithTimeout } = await import("../process/exec.js"));
       ({
         runGatewayUpdateCheck,
@@ -87,7 +74,7 @@ describe("update-startup", () => {
     }
     vi.mocked(resolveOpenClawPackageRoot).mockClear();
     vi.mocked(checkUpdateStatus).mockClear();
-    vi.mocked(resolveNpmChannelTag).mockClear();
+    vi.mocked(resolvePackageChannelTarget).mockClear();
     vi.mocked(runCommandWithTimeout).mockClear();
     resetUpdateAvailableStateForTest();
   });
@@ -121,8 +108,10 @@ describe("update-startup", () => {
   }
 
   function mockNpmChannelTag(tag: string, version: string) {
-    vi.mocked(resolveNpmChannelTag).mockResolvedValue({
+    vi.mocked(resolvePackageChannelTarget).mockResolvedValue({
+      source: "npm",
       tag,
+      installSpec: tag,
       version,
     });
   }
@@ -257,13 +246,17 @@ describe("update-startup", () => {
 
   it("emits update change callback when update state clears", async () => {
     mockPackageInstallStatus();
-    vi.mocked(resolveNpmChannelTag)
+    vi.mocked(resolvePackageChannelTarget)
       .mockResolvedValueOnce({
+        source: "npm",
         tag: "latest",
+        installSpec: "latest",
         version: "2.0.0",
       })
       .mockResolvedValueOnce({
+        source: "npm",
         tag: "latest",
+        installSpec: "latest",
         version: "1.0.0",
       });
 
@@ -354,6 +347,24 @@ describe("update-startup", () => {
       timeoutMs: 45 * 60 * 1000,
       root: "/opt/openclaw",
     });
+  });
+
+  it("does not auto-update when the available version came from GitHub tags", async () => {
+    mockPackageInstallStatus();
+    vi.mocked(resolvePackageChannelTarget).mockResolvedValue({
+      source: "github",
+      tag: "v2.0.0-beta.1",
+      installSpec: "2.0.0-beta.1",
+      version: "2.0.0-beta.1",
+    });
+    const runAutoUpdate = createAutoUpdateSuccessMock();
+
+    await runAutoUpdateCheckWithDefaults({
+      cfg: createBetaAutoUpdateConfig(),
+      runAutoUpdate,
+    });
+
+    expect(runAutoUpdate).not.toHaveBeenCalled();
   });
 
   it("runs auto-update when checkOnStart is false but auto-update is enabled", async () => {

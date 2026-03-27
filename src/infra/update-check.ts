@@ -3,7 +3,7 @@ import path from "node:path";
 import { runCommandWithTimeout } from "../process/exec.js";
 import { fetchWithTimeout } from "../utils/fetch-timeout.js";
 import { detectPackageManager as detectPackageManagerImpl } from "./detect-package-manager.js";
-import { channelToNpmTag, type UpdateChannel } from "./update-channels.js";
+import { channelToNpmTag, isStableTag, type UpdateChannel } from "./update-channels.js";
 
 export type PackageManager = "pnpm" | "bun" | "npm" | "unknown";
 
@@ -314,6 +314,169 @@ export async function fetchNpmTagVersion(params: {
   } catch (err) {
     return { tag, version: null, error: String(err) };
   }
+}
+
+/** HippoClaw fork: compare updates against GitHub tags, not npm `openclaw`. */
+const HIPPOCLAW_GITHUB_OWNER = "agenthippoai";
+const HIPPOCLAW_GITHUB_REPO = "hippoclaw";
+
+const GITHUB_TAGS_PATH = (owner: string, repo: string, page: number) =>
+  `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tags?per_page=100&page=${page}`;
+
+export function parseGitHubOwnerRepoFromPackageRepository(repository: unknown): {
+  owner: string;
+  repo: string;
+} | null {
+  let url: string | null = null;
+  if (typeof repository === "string") {
+    url = repository;
+  } else if (repository && typeof repository === "object" && "url" in repository) {
+    const u = (repository as { url?: unknown }).url;
+    url = typeof u === "string" ? u : null;
+  }
+  if (!url?.trim()) {
+    return null;
+  }
+  const normalized = url.trim().replace(/^git\+/i, "");
+  const match = /github\.com[/:]([^/]+)\/([^/#?]+?)(?:\.git)?\/?$/i.exec(normalized);
+  if (!match?.[1] || !match[2]) {
+    return null;
+  }
+  const repoName = match[2].replace(/\.git$/i, "");
+  return { owner: match[1], repo: repoName };
+}
+
+export function isAgenthippoHippoclawRepo(repo: { owner: string; repo: string } | null): boolean {
+  if (!repo) {
+    return false;
+  }
+  return (
+    repo.owner.toLowerCase() === HIPPOCLAW_GITHUB_OWNER &&
+    repo.repo.toLowerCase().replace(/\.git$/i, "") === HIPPOCLAW_GITHUB_REPO
+  );
+}
+
+export async function readPackageGitHubRepoFromRoot(root: string): Promise<{
+  owner: string;
+  repo: string;
+} | null> {
+  try {
+    const raw = await fs.readFile(path.join(root, "package.json"), "utf-8");
+    const parsed = JSON.parse(raw) as { repository?: unknown };
+    return parseGitHubOwnerRepoFromPackageRepository(parsed.repository);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeGitTagToSemver(tagName: string): string {
+  const t = tagName.trim();
+  return t.startsWith("v") || t.startsWith("V") ? t.slice(1) : t;
+}
+
+/** Latest semver among repo tags for the requested release channel. */
+export async function fetchLatestGitHubTagChannelVersion(params: {
+  owner: string;
+  repo: string;
+  channel: UpdateChannel;
+  timeoutMs?: number;
+}): Promise<{ tag: string; version: string } | null> {
+  const timeoutMs = params.timeoutMs ?? 3500;
+  const headers: HeadersInit = {
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+  let bestAny: { tag: string; version: string } | null = null;
+  let bestStable: { tag: string; version: string } | null = null;
+
+  for (let page = 1; page <= 10; page += 1) {
+    try {
+      const res = await fetchWithTimeout(
+        GITHUB_TAGS_PATH(params.owner, params.repo, page),
+        { headers },
+        Math.max(250, timeoutMs),
+      );
+      if (!res.ok) {
+        return page === 1 ? null : params.channel === "stable" ? bestStable : bestAny;
+      }
+      const json = (await res.json()) as unknown;
+      if (!Array.isArray(json) || json.length === 0) {
+        break;
+      }
+      for (const entry of json) {
+        if (!entry || typeof entry !== "object" || !("name" in entry)) {
+          continue;
+        }
+        const name = (entry as { name?: unknown }).name;
+        if (typeof name !== "string" || !name.trim()) {
+          continue;
+        }
+        const version = normalizeGitTagToSemver(name);
+        if (compareSemverStrings(version, version) == null) {
+          continue;
+        }
+        const candidate = { tag: name.trim(), version };
+        if (!bestAny || (compareSemverStrings(version, bestAny.version) ?? 0) > 0) {
+          bestAny = candidate;
+        }
+        if (
+          isStableTag(name) &&
+          (!bestStable || (compareSemverStrings(version, bestStable.version) ?? 0) > 0)
+        ) {
+          bestStable = candidate;
+        }
+      }
+      if (json.length < 100) {
+        break;
+      }
+    } catch {
+      return params.channel === "stable" ? bestStable : bestAny;
+    }
+  }
+
+  return params.channel === "stable" ? bestStable : bestAny;
+}
+
+export type PackageChannelTarget = {
+  source: "npm" | "github";
+  tag: string;
+  installSpec: string;
+  version: string | null;
+};
+
+export async function resolvePackageChannelTarget(params: {
+  root: string;
+  channel: UpdateChannel;
+  timeoutMs?: number;
+}): Promise<PackageChannelTarget> {
+  if (params.channel !== "dev") {
+    const ghRepo = await readPackageGitHubRepoFromRoot(params.root);
+    if (ghRepo && isAgenthippoHippoclawRepo(ghRepo)) {
+      const resolved = await fetchLatestGitHubTagChannelVersion({
+        owner: ghRepo.owner,
+        repo: ghRepo.repo,
+        channel: params.channel,
+        timeoutMs: params.timeoutMs,
+      });
+      return {
+        source: "github",
+        tag: resolved?.tag ?? "github",
+        installSpec: resolved?.version ?? "latest",
+        version: resolved?.version ?? null,
+      };
+    }
+  }
+
+  const resolved = await resolveNpmChannelTag({
+    channel: params.channel,
+    timeoutMs: params.timeoutMs,
+  });
+  return {
+    source: "npm",
+    tag: resolved.tag,
+    installSpec: resolved.tag,
+    version: resolved.version,
+  };
 }
 
 export async function resolveNpmChannelTag(params: {

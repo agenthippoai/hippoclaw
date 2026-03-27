@@ -6,9 +6,13 @@ import {
   checkDepsStatus,
   checkUpdateStatus,
   compareSemverStrings,
+  fetchLatestGitHubTagChannelVersion,
   fetchNpmLatestVersion,
   fetchNpmTagVersion,
   formatGitInstallLabel,
+  isAgenthippoHippoclawRepo,
+  parseGitHubOwnerRepoFromPackageRepository,
+  resolvePackageChannelTarget,
   resolveNpmChannelTag,
 } from "./update-check.js";
 
@@ -109,6 +113,160 @@ describe("resolveNpmChannelTag", () => {
       version: null,
       error: "HTTP 404",
     });
+  });
+});
+
+describe("parseGitHubOwnerRepoFromPackageRepository", () => {
+  it("parses git+https and https github urls", () => {
+    expect(
+      parseGitHubOwnerRepoFromPackageRepository({
+        type: "git",
+        url: "git+https://github.com/agenthippoai/hippoclaw.git",
+      }),
+    ).toEqual({ owner: "agenthippoai", repo: "hippoclaw" });
+    expect(
+      parseGitHubOwnerRepoFromPackageRepository("https://github.com/agenthippoai/hippoclaw"),
+    ).toEqual({ owner: "agenthippoai", repo: "hippoclaw" });
+  });
+
+  it("returns null for non-github or missing url", () => {
+    expect(parseGitHubOwnerRepoFromPackageRepository(undefined)).toBeNull();
+    expect(
+      parseGitHubOwnerRepoFromPackageRepository({ url: "https://example.com/a/b.git" }),
+    ).toBeNull();
+  });
+});
+
+describe("isAgenthippoHippoclawRepo", () => {
+  it("matches the HippoClaw fork", () => {
+    expect(isAgenthippoHippoclawRepo({ owner: "agenthippoai", repo: "hippoclaw" })).toBe(true);
+    expect(isAgenthippoHippoclawRepo({ owner: "AgentHippoAI", repo: "hippoclaw" })).toBe(true);
+    expect(isAgenthippoHippoclawRepo({ owner: "agenthippoai", repo: "hippoclaw.git" })).toBe(true);
+    expect(isAgenthippoHippoclawRepo({ owner: "openclaw", repo: "openclaw" })).toBe(false);
+    expect(isAgenthippoHippoclawRepo(null)).toBe(false);
+  });
+});
+
+describe("fetchLatestGitHubTagChannelVersion", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("selects highest semver among tags", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return {
+          ok: true,
+          json: async () => [{ name: "1.0.0" }, { name: "v2.0.0" }, { name: "not-a-version" }],
+        } as Response;
+      }),
+    );
+    await expect(
+      fetchLatestGitHubTagChannelVersion({
+        owner: "agenthippoai",
+        repo: "hippoclaw",
+        channel: "beta",
+        timeoutMs: 1000,
+      }),
+    ).resolves.toEqual({ tag: "v2.0.0", version: "2.0.0" });
+  });
+
+  it("filters prerelease tags out of stable channel resolution", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return {
+          ok: true,
+          json: async () => [{ name: "v2.1.0-beta.1" }, { name: "v2.0.0" }],
+        } as Response;
+      }),
+    );
+    await expect(
+      fetchLatestGitHubTagChannelVersion({
+        owner: "agenthippoai",
+        repo: "hippoclaw",
+        channel: "stable",
+        timeoutMs: 1000,
+      }),
+    ).resolves.toEqual({ tag: "v2.0.0", version: "2.0.0" });
+  });
+
+  it("returns null when the first page fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 403 }) as Response),
+    );
+    await expect(
+      fetchLatestGitHubTagChannelVersion({
+        owner: "agenthippoai",
+        repo: "hippoclaw",
+        channel: "stable",
+        timeoutMs: 1000,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("returns the best version collected so far when a later page fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => [{ name: "v2.0.0" }],
+        } as Response)
+        .mockResolvedValueOnce({ ok: false, status: 403 } as Response),
+    );
+
+    await expect(
+      fetchLatestGitHubTagChannelVersion({
+        owner: "agenthippoai",
+        repo: "hippoclaw",
+        channel: "stable",
+        timeoutMs: 1000,
+      }),
+    ).resolves.toEqual({ tag: "v2.0.0", version: "2.0.0" });
+  });
+});
+
+describe("resolvePackageChannelTarget", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("uses exact package versions for HippoClaw GitHub tag updates", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "hippoclaw-package-target-"));
+    await fs.writeFile(
+      path.join(root, "package.json"),
+      JSON.stringify({
+        repository: {
+          type: "git",
+          url: "git+https://github.com/agenthippoai/hippoclaw.git",
+        },
+      }),
+      "utf8",
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return {
+          ok: true,
+          json: async () => [{ name: "v2.0.0" }],
+        } as Response;
+      }),
+    );
+
+    await expect(
+      resolvePackageChannelTarget({ root, channel: "stable", timeoutMs: 1000 }),
+    ).resolves.toEqual({
+      source: "github",
+      tag: "v2.0.0",
+      installSpec: "2.0.0",
+      version: "2.0.0",
+    });
+
+    await fs.rm(root, { recursive: true, force: true });
   });
 });
 
