@@ -20,8 +20,8 @@ import {
 } from "../../infra/update-channels.js";
 import {
   compareSemverStrings,
-  resolveNpmChannelTag,
   checkUpdateStatus,
+  resolvePackageChannelTarget,
 } from "../../infra/update-check.js";
 import {
   createGlobalInstallEnv,
@@ -731,16 +731,20 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
   let targetVersion: string | null = null;
   let downgradeRisk = false;
   let fallbackToLatest = false;
+  let resolvedReleaseTag: string | null = null;
 
   if (updateInstallKind !== "git") {
     currentVersion = switchToPackage ? null : await readPackageVersion(root);
-    targetVersion = explicitTag
-      ? await resolveTargetVersion(tag, timeoutMs)
-      : await resolveNpmChannelTag({ channel, timeoutMs }).then((resolved) => {
-          tag = resolved.tag;
-          fallbackToLatest = channel === "beta" && resolved.tag === "latest";
-          return resolved.version;
-        });
+    if (explicitTag) {
+      targetVersion = await resolveTargetVersion(tag, timeoutMs);
+    } else {
+      const resolved = await resolvePackageChannelTarget({ root, channel, timeoutMs });
+      resolvedReleaseTag = resolved.tag;
+      tag = resolved.installSpec;
+      fallbackToLatest =
+        channel === "beta" && resolved.source === "npm" && resolved.tag === "latest";
+      targetVersion = resolved.version;
+    }
     const cmp =
       currentVersion && targetVersion ? compareSemverStrings(currentVersion, targetVersion) : null;
     downgradeRisk =
@@ -788,6 +792,9 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
     }
     if (fallbackToLatest) {
       notes.push("Beta channel resolves to latest for this run (fallback).");
+    }
+    if (resolvedReleaseTag && resolvedReleaseTag !== tag) {
+      notes.push(`Resolved release tag ${resolvedReleaseTag} to package version ${tag}.`);
     }
 
     printDryRunPreview(

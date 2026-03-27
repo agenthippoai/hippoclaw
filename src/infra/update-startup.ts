@@ -9,7 +9,11 @@ import { VERSION } from "../version.js";
 import { writeJsonAtomic } from "./json-files.js";
 import { resolveOpenClawPackageRoot } from "./openclaw-root.js";
 import { normalizeUpdateChannel, DEFAULT_PACKAGE_CHANNEL } from "./update-channels.js";
-import { compareSemverStrings, resolveNpmChannelTag, checkUpdateStatus } from "./update-check.js";
+import {
+  checkUpdateStatus,
+  compareSemverStrings,
+  resolvePackageChannelTarget,
+} from "./update-check.js";
 
 type UpdateCheckState = {
   lastCheckedAt?: string;
@@ -372,9 +376,19 @@ export async function runGatewayUpdateCheck(params: {
     await writeState(statePath, nextState);
     return;
   }
+  if (!root) {
+    await writeState(statePath, nextState);
+    return;
+  }
 
   const channel = normalizeUpdateChannel(params.cfg.update?.channel) ?? DEFAULT_PACKAGE_CHANNEL;
-  const resolved = await resolveNpmChannelTag({ channel, timeoutMs: 2500 });
+
+  const resolved = await resolvePackageChannelTarget({
+    root,
+    channel,
+    timeoutMs: 2500,
+  });
+
   const tag = resolved.tag;
   if (!resolved.version) {
     await writeState(statePath, nextState);
@@ -406,7 +420,7 @@ export async function runGatewayUpdateCheck(params: {
       nextState.lastNotifiedTag = tag;
     }
 
-    if (auto.enabled && (channel === "stable" || channel === "beta")) {
+    if (auto.enabled && resolved.source === "npm" && (channel === "stable" || channel === "beta")) {
       const runAuto = params.runAutoUpdate ?? runAutoUpdateCommand;
       const attemptIntervalMs =
         channel === "beta"

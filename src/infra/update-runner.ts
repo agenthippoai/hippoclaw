@@ -19,7 +19,7 @@ import {
   isStableTag,
   type UpdateChannel,
 } from "./update-channels.js";
-import { compareSemverStrings } from "./update-check.js";
+import { compareSemverStrings, resolvePackageChannelTarget } from "./update-check.js";
 import {
   cleanupGlobalRenameDirs,
   createGlobalInstallEnv,
@@ -872,7 +872,17 @@ export async function runGatewayUpdate(opts: UpdateRunnerOptions = {}): Promise<
       packageName,
     });
     const channel = opts.channel ?? DEFAULT_PACKAGE_CHANNEL;
-    const tag = normalizeTag(opts.tag ?? channelToNpmTag(channel));
+    const tag = opts.tag
+      ? normalizeTag(opts.tag)
+      : normalizeTag(
+          (
+            await resolvePackageChannelTarget({
+              root: pkgRoot,
+              channel,
+              timeoutMs,
+            })
+          ).installSpec ?? channelToNpmTag(channel),
+        );
     const steps: UpdateStepResult[] = [];
     const globalInstallEnv = await createGlobalInstallEnv();
     const spec = resolveGlobalInstallSpec({

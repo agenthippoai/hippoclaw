@@ -44,10 +44,34 @@ describe("runGatewayUpdate", () => {
     tempDir = path.join(fixtureRoot, `case-${caseId++}`);
     await fs.mkdir(tempDir, { recursive: true });
     await fs.writeFile(path.join(tempDir, "openclaw.mjs"), "export {};\n", "utf-8");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) => {
+        const href = String(url);
+        if (href.includes("registry.npmjs.org/openclaw/latest")) {
+          return { ok: true, status: 200, json: async () => ({ version: "2.0.0" }) } as Response;
+        }
+        if (href.includes("registry.npmjs.org/openclaw/beta")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ version: "2.1.0-beta.1" }),
+          } as Response;
+        }
+        if (href.includes("api.github.com/repos/agenthippoai/hippoclaw/tags")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => [{ name: "v9.9.9" }, { name: "v10.0.0-beta.1" }],
+          } as Response;
+        }
+        return { ok: false, status: 404, json: async () => ({}) } as Response;
+      }),
+    );
   });
 
-  afterEach(async () => {
-    // Shared fixtureRoot cleaned up in afterAll.
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   async function createStableTagRunner(params: {
@@ -178,13 +202,21 @@ describe("runGatewayUpdate", () => {
     return runWithCommand(runner, options);
   }
 
-  async function seedGlobalPackageRoot(pkgRoot: string, version = "1.0.0") {
+  async function seedGlobalPackageRoot(
+    pkgRoot: string,
+    version = "1.0.0",
+    repository?: string | { type?: string; url?: string },
+  ) {
     await fs.mkdir(pkgRoot, { recursive: true });
-    await fs.writeFile(
-      path.join(pkgRoot, "package.json"),
-      JSON.stringify({ name: "openclaw", version }),
-      "utf-8",
-    );
+    const pkg: {
+      name: string;
+      version: string;
+      repository?: string | { type?: string; url?: string };
+    } = { name: "openclaw", version };
+    if (repository) {
+      pkg.repository = repository;
+    }
+    await fs.writeFile(path.join(pkgRoot, "package.json"), JSON.stringify(pkg), "utf-8");
   }
 
   async function writeGlobalPackageVersion(pkgRoot: string, version = "2.0.0") {
@@ -195,10 +227,13 @@ describe("runGatewayUpdate", () => {
     );
   }
 
-  async function createGlobalPackageFixture(rootDir: string) {
+  async function createGlobalPackageFixture(
+    rootDir: string,
+    options?: { repository?: string | { type?: string; url?: string } },
+  ) {
     const nodeModules = path.join(rootDir, "node_modules");
     const pkgRoot = path.join(nodeModules, "openclaw");
-    await seedGlobalPackageRoot(pkgRoot);
+    await seedGlobalPackageRoot(pkgRoot, "1.0.0", options?.repository);
     return { nodeModules, pkgRoot };
   }
 
@@ -350,10 +385,11 @@ describe("runGatewayUpdate", () => {
     expectedInstallCommand: string;
     channel?: "stable" | "beta";
     tag?: string;
+    repository?: string | { type?: string; url?: string };
   }): Promise<{ calls: string[]; result: Awaited<ReturnType<typeof runGatewayUpdate>> }> {
     const nodeModules = path.join(tempDir, "node_modules");
     const pkgRoot = path.join(nodeModules, "openclaw");
-    await seedGlobalPackageRoot(pkgRoot);
+    await seedGlobalPackageRoot(pkgRoot, "1.0.0", params.repository);
 
     const { calls, runCommand } = createGlobalInstallHarness({
       pkgRoot,
@@ -427,11 +463,20 @@ describe("runGatewayUpdate", () => {
       expectedInstallCommand: "npm i -g openclaw@beta --no-fund --no-audit --loglevel=error",
       tag: "beta",
     },
-  ])("$title", async ({ expectedInstallCommand, channel, tag }) => {
+    {
+      title: "uses resolved github version for HippoClaw global npm installs",
+      expectedInstallCommand: "npm i -g openclaw@9.9.9 --no-fund --no-audit --loglevel=error",
+      repository: {
+        type: "git",
+        url: "git+https://github.com/agenthippoai/hippoclaw.git",
+      },
+    },
+  ])("$title", async ({ expectedInstallCommand, channel, tag, repository }) => {
     const { calls, result } = await runNpmGlobalUpdateCase({
       expectedInstallCommand,
       channel,
       tag,
+      repository,
     });
 
     expect(result.status).toBe("ok");
